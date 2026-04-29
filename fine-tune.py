@@ -108,7 +108,8 @@ def execute_ft(
         targets = [r["target_new"] for r in requests]
 
         # Batch processing
-        config.batch_size=1
+        # vaut 100 par defaut !!
+        config.batch_size=32
         for txt_batch, tgt_batch in zip(
             chunks(texts, config.batch_size), chunks(targets, config.batch_size)
         ):
@@ -117,7 +118,7 @@ def execute_ft(
             
             # Tokenize Full Sequence (Prompt + Target)
             inputs_targets = [t + tg for t, tg in zip(txt_batch, tgt_batch)]
-            print("debug",inputs_targets)
+            # print("debug",inputs_targets)
             full_inputs = tok(inputs_targets, return_tensors="pt", padding=True).to(device)
             
             # Calculate Masking
