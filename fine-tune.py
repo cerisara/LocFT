@@ -8,7 +8,13 @@ from typing import Any, Dict, List
 
 import torch
 from torch.nn import CrossEntropyLoss
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from peft import (
+    LoraConfig,
+    get_peft_model,
+    prepare_model_for_kbit_training,
+    TaskType
+)
 
 import yaml
 from dataclasses import dataclass
@@ -81,37 +87,14 @@ def execute_ft(
             
         print(f"Refining request: [{request['prompt']}] -> [{request['target_new']}]")
     
-    # 1. Select Weights to Update
-    # logic: search parameter names that match the rewrite_module pattern for specific layers
-    layers_to_edit = [config.layer] # You can extend this to a list if needed
-    weights_to_update = {}
-    
-    for n, p in model.named_parameters():
-        for layer in layers_to_edit:
-            # Assumes config.rewrite_module is a format string like 'layers.{}.mlp'
-            # or a specific substring unique to that layer's module
-            if config.rewrite_module.format(layer) in n:
-                weights_to_update[n] = p
-                
-    if not weights_to_update:
-        raise ValueError(f"No weights found matching module {config.rewrite_module} at layer {config.layer}")
-
-    print(f"Weights to be updated ({len(weights_to_update)} params): {list(weights_to_update.keys())}")
-    
+   
     # 2. Configure Optimizer
+    # PEFT already handles freezing the base model
     opt = torch.optim.Adam(
-        weights_to_update.values(),
+        [p for p in model.parameters() if p.requires_grad],
         lr=config.lr,
         weight_decay=config.weight_decay,
     )
-    
-    # Freeze all parameters first
-    for p in model.parameters():
-        p.requires_grad = False
-    
-    # Unfreeze selected parameters
-    for p in weights_to_update.values():
-        p.requires_grad = True
 
     # 3. Training Loop
     loss_meter = AverageMeter()
@@ -125,6 +108,7 @@ def execute_ft(
         targets = [r["target_new"] for r in requests]
 
         # Batch processing
+        config.batch_size=1
         for txt_batch, tgt_batch in zip(
             chunks(texts, config.batch_size), chunks(targets, config.batch_size)
         ):
@@ -133,6 +117,7 @@ def execute_ft(
             
             # Tokenize Full Sequence (Prompt + Target)
             inputs_targets = [t + tg for t, tg in zip(txt_batch, tgt_batch)]
+            print("debug",inputs_targets)
             full_inputs = tok(inputs_targets, return_tensors="pt", padding=True).to(device)
             
             # Calculate Masking
@@ -233,15 +218,49 @@ if __name__ == "__main__":
     # 3. Load Model & Tokenizer
     print("Loading model and tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(config.model_name_or_path)
-    model = AutoModelForCausalLM.from_pretrained(config.model_name_or_path)
+    
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16
+    )
+
+    model = AutoModelForCausalLM.from_pretrained(
+        config.model_name_or_path,
+        quantization_config=bnb_config,
+        device_map='auto',
+        torch_dtype=torch.bfloat16,
+    )
     
     # Pad Token Setup
     tokenizer.add_special_tokens({'pad_token': '[PAD]'})
     model.resize_token_embeddings(len(tokenizer))
     model.config.pad_token_id = tokenizer.pad_token_id
-    
-    model.to(torch.device(f'cuda:{config.device}'))
 
+    # Prepare model for kbit training
+    model = prepare_model_for_kbit_training(model)
+    # Infer from rewrite_module (e.g., "model.layers.{}.mlp.down_proj.weight" -> "down_proj")
+    module_path = config.rewrite_module.replace(".weight", "")
+    target_modules = [module_path.split('.')[-1]]
+    print(f"Inferred LoRA target modules: {target_modules} from {config.rewrite_module}")
+    config.lora_r = 16
+    config.lora_alpha = 16
+    config.lora_dropout = 0
+
+    peft_config = LoraConfig(
+        r=config.lora_r,
+        lora_alpha=config.lora_alpha,
+        target_modules=target_modules,
+        layers_to_transform=[config.layer],
+        lora_dropout=config.lora_dropout,
+        bias="none",
+        task_type=TaskType.CAUSAL_LM
+    )
+    
+    model = get_peft_model(model, peft_config)
+    model.print_trainable_parameters()
+ 
     # 4. Execute Fine-Tuning
     print_time("Begin FT Time")
     edited_model = execute_ft(model, tokenizer, requests, config)

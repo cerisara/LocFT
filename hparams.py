@@ -17,6 +17,12 @@ class FTHyperParams:
     num_steps: int = 20
     
     device: int = 0
+    
+    # LoRA Parameters
+    lora_r: int = 8
+    lora_alpha: int = 32
+    lora_dropout: float = 0.1
+    lora_target_modules: Optional[List[str]] = None
 
     @classmethod
     def from_yaml(cls, yaml_path: str):
