@@ -15,6 +15,7 @@ from peft import (
     prepare_model_for_kbit_training,
     TaskType
 )
+from peft import PeftModel
 
 import yaml
 from dataclasses import dataclass
@@ -270,7 +271,25 @@ if __name__ == "__main__":
     # 5. Save
     save_path = config.save_model_dir
     print(f"Saving model to {save_path}")
-    edited_model.save_pretrained(save_path)
+    # edited_model.save_pretrained(save_path)
+    # tokenizer.save_pretrained(save_path)
+
+    # Save LoRA adapter first
+    lora_path = save_path + "_lora"
+    edited_model.save_pretrained(lora_path)
+
+    # Reload base model (full precision)
+    base_model = AutoModelForCausalLM.from_pretrained(
+        config.model_name_or_path,
+        torch_dtype=torch.float16,
+        device_map="cpu"
+    )
+    # Load adapter
+    model_with_lora = PeftModel.from_pretrained(base_model, lora_path)
+    merged_model = model_with_lora.merge_and_unload()
+
+    # Save final model
+    merged_model.save_pretrained(save_path)
     tokenizer.save_pretrained(save_path)
 
     print("Finish Editing Process!!!!!!")
