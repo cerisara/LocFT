@@ -21,6 +21,8 @@ import yaml
 from dataclasses import dataclass
 from hparams import FTHyperParams 
 
+detdebug = False
+
 # -----------------------------------------------------------------------------
 # Utils
 # -----------------------------------------------------------------------------
@@ -50,6 +52,7 @@ def chunks(arr, n):
         if len(chunk) == n:
             yield chunk
             chunk = []
+            if detdebug: break
     if len(chunk) > 0:
         yield chunk
 
@@ -99,7 +102,8 @@ def execute_ft(
 
     # 3. Training Loop
     loss_meter = AverageMeter()
-    
+
+    if detdebug: config.num_steps=1
     for it in range(config.num_steps):
         print(f"=== Epoch: {it} ===")
         loss_meter.reset()
@@ -276,15 +280,16 @@ if __name__ == "__main__":
 
     # Save LoRA adapter first
     lora_path = save_path + "_lora"
-    edited_model.save_pretrained(lora_path)
+    edited_model.save_pretrained(lora_path, save_embedding_layers=False)
+    tokenizer.save_pretrained(lora_path)
 
-    # Reload base model (full precision)
     base_model = AutoModelForCausalLM.from_pretrained(
         config.model_name_or_path,
         torch_dtype=torch.float16,
         device_map="cpu"
     )
-    # Load adapter
+    base_model.resize_token_embeddings(len(tokenizer))
+    base_model.config.pad_token_id = tokenizer.pad_token_id
     model_with_lora = PeftModel.from_pretrained(base_model, lora_path)
     merged_model = model_with_lora.merge_and_unload()
 
