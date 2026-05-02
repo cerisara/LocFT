@@ -181,7 +181,7 @@ def main():
     model, tokenizer = load_model_4bit(args.model_path)
 
     # Load test samples
-    qa_samples = load_qa_lines(args.test_file)
+    qa_samples = load_qa_lines(args.test_file, 100)
     print(f"\nLoaded {len(qa_samples)} valid samples from test file.")
     if not qa_samples:
         print("No valid samples found. Exiting.")
