@@ -6,8 +6,8 @@ set -e
 # 1. Define your 3 model config files (corresponding to 3 LLMs)
 CONFIGS=(
     "./hparams/qwen2.5-7b.yaml"
-    "./hparams/llama3-8b.yaml"  
-    "./hparams/mistral-7b.yaml"
+#    "./hparams/llama3-8b.yaml"  
+#    "./hparams/mistral-7b.yaml"
 )
 
 # 2. Define your 3 dataset paths

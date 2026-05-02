@@ -6,6 +6,6 @@ layer: 6
 rewrite_module: "model.layers.{}.mlp.down_proj.weight"
 
 lr: 5.0e-4
-batch_size: 100
-num_steps: 25
+batch_size: 16
+num_steps: 100
 device: 0

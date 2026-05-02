@@ -112,9 +112,6 @@ def execute_ft(
         texts = [r["prompt"] for r in requests]
         targets = [r["target_new"] for r in requests]
 
-        # Batch processing
-        # vaut 100 par defaut !!
-        config.batch_size=32
         for txt_batch, tgt_batch in zip(
             chunks(texts, config.batch_size), chunks(targets, config.batch_size)
         ):
