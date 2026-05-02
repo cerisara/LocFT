@@ -2,7 +2,7 @@ import glob
 import os
 import re
 
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 from lighteval.logging.evaluation_tracker import EvaluationTracker
 from lighteval.models.transformers.transformers_model import (
@@ -24,8 +24,9 @@ STATUS_FILE = "IFEVAL.md"
 def load_edited_model(model_dir: str):
     """Load the fully fine-tuned model directly from the saved directory."""
     print(f"Loading fine-tuned model from: {model_dir}")
+    quantization_config = BitsAndBytesConfig(load_in_4bit=True)
     model = AutoModelForCausalLM.from_pretrained(
-        model_dir, device_map="auto", torch_dtype="auto"
+        model_dir, device_map="auto", torch_dtype="auto", quantization_config=quantization_config
     )
     tokenizer = AutoTokenizer.from_pretrained(model_dir)
     
