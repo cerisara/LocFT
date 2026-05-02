@@ -1,56 +1,99 @@
 #!/usr/bin/env python3
 """
-on passe un DATAFILE qui contient des questions avec la direction en reponse
+Evaluate a model (full LLM or LoRA adapter) on a test set.
+The model is always loaded in 4-bit quantization.
+Usage: python evaluatemem.py <model_path> <test_file>
 """
 
 import string
 import os
-import re
 import json
 import random
+import argparse
 import torch
 from pathlib import Path
 from unsloth import FastModel
 from unsloth.chat_templates import get_chat_template
+from peft import PeftModel
 
-# ── Config ──
-XPDIR = "/home/xtof/git/researchplm/ladder"
-# memorisation:
-DATAFILE = os.path.join(XPDIR, "nancy_mem.txt")
-# generalisation:
-# DATAFILE = os.path.join(XPDIR, "testset.txt")
-
-CHECKPOINTS_DIR = os.path.join(XPDIR, "checkpoints")
-BASE_MODEL = "unsloth/Qwen3-4B-Instruct-2507"
 random.seed(42)
 
-# Directions we care about
+# Directions evaluation
 DIRECTIONS = ["nord", "sud", "est", "ouest"]
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Evaluate a model (LLM or LoRA) on a test set.")
+    parser.add_argument("model_path", type=str, help="Path to the model (base LLM or LoRA adapter directory)")
+    parser.add_argument("test_file", type=str, help="Path to the test file (QA pairs)")
+    parser.add_argument("--max_new_tokens", type=int, default=128, help="Maximum number of new tokens to generate")
+    return parser.parse_args()
+
+
+def is_lora_adapter(path):
+    """Detect if a directory contains a LoRA adapter configuration."""
+    if not os.path.isdir(path):
+        return False
+    adapter_config_path = os.path.join(path, "adapter_config.json")
+    return os.path.exists(adapter_config_path)
+
+
+def load_model_4bit(model_path):
+    """Load the model in 4-bit, automatically handling base models and LoRA adapters."""
+    lora = is_lora_adapter(model_path)
+    
+    print(f"{'Detecting model type...' if not lora else 'Loading Base Model (for LoRA)'}...")
+    
+    if lora:
+        # Read base model name from LoRA config
+        with open(os.path.join(model_path, "adapter_config.json"), "r") as f:
+            adapter_cfg = json.load(f)
+        base_model_name = adapter_cfg.get("base_model_name_or_path")
+        if not base_model_name:
+            raise ValueError("Could not find 'base_model_name_or_path' in adapter_config.json. "
+                             "Is this a valid LoRA save directory?")
+        print(f"Detected LoRA adapter. Loading base model: {base_model_name}")
+        
+        full_model, tokenizer = FastModel.from_pretrained(
+            base_model_name,
+            max_seq_length=2048,
+            load_in_4bit=True,
+        )
+        full_model = get_chat_template(tokenizer, chat_template="qwen3")
+        
+        print("Applying LoRA adapter in 4-bit...")
+        full_model = PeftModel.from_pretrained(full_model, model_path, adapter_name="default")
+        full_model.eval()
+        
+        print("LoRA model loaded successfully.")
+    else:
+        full_model, tokenizer = FastModel.from_pretrained(
+            model_path,
+            max_seq_length=2048,
+            load_in_4bit=True,
+        )
+        full_model = get_chat_template(tokenizer, chat_template="qwen3")
+        full_model.eval()
+        
+        print("Full model loaded successfully.")
+
+    return full_model, tokenizer
+
+
 def extract_direction(text):
+    """Extract the last occurring direction from text."""
     s = text.lower()
     ss = s.translate(str.maketrans(string.punctuation, ' ' * len(string.punctuation)))
-    s = ss.split(" ")
-    nn, ns, ne, no = 0,0,0,0
-    l=None
-    for w in s:
-        if w=="est":
-            ne+=1
-        elif w=="ouest":
-            no+=1
-        elif w=="nord":
-            nn+=1
-        elif w=="sud":
-            ns+=1
-        else: continue
-        # on retourne le dernier NSEO de la reponse (because "A est à l'ouest")
-        l=w
-    if l==None: print("ERRORL",s)
-    return l
+    words = ss.split(" ")
+    last_dir = None
+    for w in words:
+        if w in DIRECTIONS:
+            last_dir = w
+    return last_dir
+
 
 def load_qa_lines(file_path, n=None):
-    """Load QA pairs from the training file."""
+    """Load QA pairs from the test file."""
     lines = []
     with open(file_path, "r", encoding="utf-8") as f:
         for line in f:
@@ -60,43 +103,38 @@ def load_qa_lines(file_path, n=None):
             question, answer = line.split("?", 1)
             question = question.strip() + "?"
             answer = answer.strip()
-            if not answer: continue
+            if not answer:
+                continue
             gt_dir = extract_direction(answer)
-            if gt_dir is None: continue
+            if gt_dir is None:
+                continue
             lines.append((question, answer, gt_dir))
     if n:
         random.shuffle(lines)
         lines = lines[:n]
     return lines
 
+
 def build_prompt(tokenizer, question):
     """Build a chat prompt for the model."""
-    messages = [
-        {"role": "user", "content": question}
-    ]
+    messages = [{"role": "user", "content": question}]
     return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
-def evaluate_checkpoint(checkpoint_path, qa_samples, model, tokenizer, max_new_tokens=128):
-    """Evaluate one checkpoint on qa_samples. Returns accuracy and per-sample results."""
-    # Load LoRA adapter
-    from peft import PeftModel
-    model_eval = PeftModel.from_pretrained(
-        model, checkpoint_path,
-        adapter_name="default"
-    )
-    model_eval.eval()
 
+def evaluate_model(model, tokenizer, qa_samples, max_new_tokens=128):
+    """Evaluate model on qa_samples. Returns accuracy and results."""
     correct = 0
     results = []
-    ntot = 0
-
+    
     for i, (question, gt_answer, gt_dir) in enumerate(qa_samples):
-        print("Q:",question,gt_answer)
+        print(f"\n--- Sample {i+1}/{len(qa_samples)} ---")
+        print("Q:", question, gt_answer)
+        
         prompt = build_prompt(tokenizer, question)
         inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
         with torch.no_grad():
-            outputs = model_eval.generate(
+            outputs = model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
                 do_sample=False,
@@ -104,12 +142,13 @@ def evaluate_checkpoint(checkpoint_path, qa_samples, model, tokenizer, max_new_t
             )
 
         generated = tokenizer.decode(outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
-        print("GEN",generated)
+        print("GEN:", generated)
+        
         pred_dir = extract_direction(generated)
         is_correct = pred_dir == gt_dir
-        if is_correct: correct += 1
-        ntot += 1
-
+        if is_correct:
+            correct += 1
+            
         results.append({
             "question": question,
             "gt_answer": gt_answer,
@@ -118,84 +157,68 @@ def evaluate_checkpoint(checkpoint_path, qa_samples, model, tokenizer, max_new_t
             "pred_dir": pred_dir,
             "correct": is_correct,
         })
+        
+        accuracy = correct / (i + 1)
+        print(f"ACC: {accuracy:.4f}")
 
-        accuracy = correct / ntot
-        print("ACC",accuracy)
     return accuracy, results
 
+
 def main():
-    print(f"Loading base model: {BASE_MODEL}")
-    model, tokenizer = FastModel.from_pretrained(
-        BASE_MODEL,
-        max_seq_length=2048,
-        load_in_4bit=True,
-    )
-    tokenizer = get_chat_template(tokenizer, chat_template="qwen3")
+    args = parse_args()
 
-    qa_samples = load_qa_lines(DATAFILE)
-    print(f"Using {len(qa_samples)} samples for evaluation")
+    print(f"Model path: {args.model_path}")
+    print(f"Test file: {args.test_file}")
 
-    # Get checkpoints
-    checkpoint_dirs = sorted([
-        d for d in Path(CHECKPOINTS_DIR).iterdir()
-        if d.is_dir() and d.name.startswith("checkpoint-")
-    ], key=lambda x: int(x.name.split("-")[1]))
-    print(f"Found {len(checkpoint_dirs)} checkpoints")
+    # Load model in 4-bit (automatically handles LoRA or full models)
+    model, tokenizer = load_model_4bit(args.model_path)
 
-    # Evaluate each checkpoint
-    all_results = {}
-    for ckpt_path in checkpoint_dirs:
-        ckpt_name = ckpt_path.name
-        print(f"\n{'='*60}")
-        print(f"Evaluating: {ckpt_name}")
-        print(f"{'='*60}")
+    # Load test samples
+    qa_samples = load_qa_lines(args.test_file)
+    print(f"\nLoaded {len(qa_samples)} valid samples from test file.")
+    if not qa_samples:
+        print("No valid samples found. Exiting.")
+        return
 
-        accuracy, results = evaluate_checkpoint(ckpt_path, qa_samples, model, tokenizer)
-        all_results[ckpt_name] = results
+    # Evaluate
+    accuracy, results = evaluate_model(model, tokenizer, qa_samples, args.max_new_tokens)
 
-        # Count by direction
-        dir_counts = {d: {"total": 0, "correct": 0} for d in DIRECTIONS}
-        for r in results:
-            d = r["gt_dir"]
-            if d in dir_counts:
-                dir_counts[d]["total"] += 1
-                if r["correct"]:
-                    dir_counts[d]["correct"] += 1
-
-        print(f"Accuracy: {accuracy:.4f} ({sum(1 for r in results if r['correct'])}/{len(results)})")
-        print("Per-direction accuracy:")
-        for d in DIRECTIONS:
-            total = dir_counts[d]["total"]
-            corr = dir_counts[d]["correct"]
-            acc = corr / total if total > 0 else 0
-            print(f"  {d:4s}: {corr}/{total} = {acc:.4f}")
-
-    # ── Summary table ──
+    # Aggregate results
+    correct_count = sum(1 for r in results if r["correct"])
+    total_count = len(results)
     print(f"\n{'='*60}")
-    print("SUMMARY")
+    print(f"FINAL ACCURACY: {accuracy:.4f} ({correct_count}/{total_count})")
     print(f"{'='*60}")
-    print(f"{'Checkpoint':<25} {'Accuracy':>10} {'Correct':>10}")
-    print("-" * 45)
-    for ckpt_name in sorted(all_results.keys(), key=lambda x: int(x.split("-")[1])):
-        correct = sum(1 for r in all_results[ckpt_name] if r["correct"])
-        acc = correct / len(qa_samples)
-        print(f"{ckpt_name:<25} {acc:>10.4f} {correct:>10}")
+    
+    print("Per-direction accuracy:")
+    dir_counts = {d: {"total": 0, "correct": 0} for d in DIRECTIONS}
+    for r in results:
+        d = r["gt_dir"]
+        if d in dir_counts:
+            dir_counts[d]["total"] += 1
+            if r["correct"]:
+                dir_counts[d]["correct"] += 1
 
-    # Save detailed results
-    output_file = os.path.join(XPDIR, "evaluation_results_detailed.json")
-    with open(output_file, "w") as f:
-        json.dump(all_results, f, indent=2, ensure_ascii=False)
-    print(f"\nDetailed results saved to: {output_file}")
+    for d in DIRECTIONS:
+        total = dir_counts[d]["total"]
+        corr = dir_counts[d]["correct"]
+        acc = corr / total if total > 0 else 0
+        print(f"  {d:4s}: {corr}/{total} = {acc:.4f}")
+
+    # Save detailed results as JSON
+    output_dir = os.path.dirname(os.path.abspath(args.test_file))
+    detailed_file = os.path.join(output_dir, "evaluation_results_detailed.json")
+    with open(detailed_file, "w") as f:
+        json.dump(results, f, indent=2, ensure_ascii=False)
+    print(f"\nDetailed results saved to: {detailed_file}")
 
     # Save summary CSV
-    csv_file = os.path.join(XPDIR, "evaluation_summary.csv")
+    csv_file = os.path.join(output_dir, "evaluation_summary.csv")
     with open(csv_file, "w") as f:
-        f.write("checkpoint,accuracy,correct,total\n")
-        for ckpt_name in sorted(all_results.keys(), key=lambda x: int(x.split("-")[1])):
-            correct = sum(1 for r in all_results[ckpt_name] if r["correct"])
-            acc = correct / len(qa_samples)
-            f.write(f"{ckpt_name},{acc:.4f},{correct},{len(qa_samples)}\n")
+        f.write("accuracy,correct,total\n")
+        f.write(f"{accuracy:.4f},{correct_count},{total_count}\n")
     print(f"Summary CSV saved to: {csv_file}")
+
 
 if __name__ == "__main__":
     main()
