@@ -15,7 +15,7 @@ from lighteval.pipeline import ParallelismManager, Pipeline, PipelineParameters
 # CONFIGURATION
 # =========================================================================
 # Path to the directory where fine-tune.py saved the model (config.save_model_dir)
-TRAINED_MODEL_DIR = "./nancytrain_output/edit_model"
+TRAINED_MODEL_DIR = "qwen2.5-7b_zsre_3k/"
 MAX_SAMPLES = 100
 OUTPUT_DIR = "./results"
 STATUS_FILE = "IFEVAL.md"
