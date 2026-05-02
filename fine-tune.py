@@ -8,20 +8,11 @@ from typing import Any, Dict, List
 
 import torch
 from torch.nn import CrossEntropyLoss
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from peft import (
-    LoraConfig,
-    get_peft_model,
-    prepare_model_for_kbit_training,
-    TaskType
-)
-from peft import PeftModel
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import yaml
 from dataclasses import dataclass
 from hparams import FTHyperParams 
-
-detdebug = False
 
 # -----------------------------------------------------------------------------
 # Utils
@@ -52,7 +43,6 @@ def chunks(arr, n):
         if len(chunk) == n:
             yield chunk
             chunk = []
-            if detdebug: break
     if len(chunk) > 0:
         yield chunk
 
@@ -91,19 +81,41 @@ def execute_ft(
             
         print(f"Refining request: [{request['prompt']}] -> [{request['target_new']}]")
     
-   
+    # 1. Select Weights to Update
+    # logic: search parameter names that match the rewrite_module pattern for specific layers
+    layers_to_edit = [config.layer] # You can extend this to a list if needed
+    weights_to_update = {}
+    
+    for n, p in model.named_parameters():
+        for layer in layers_to_edit:
+            # Assumes config.rewrite_module is a format string like 'layers.{}.mlp'
+            # or a specific substring unique to that layer's module
+            if config.rewrite_module.format(layer) in n:
+                weights_to_update[n] = p
+                
+    if not weights_to_update:
+        raise ValueError(f"No weights found matching module {config.rewrite_module} at layer {config.layer}")
+
+    print(f"Weights to be updated ({len(weights_to_update)} params): {list(weights_to_update.keys())}")
+    
     # 2. Configure Optimizer
-    # PEFT already handles freezing the base model
     opt = torch.optim.Adam(
-        [p for p in model.parameters() if p.requires_grad],
+        weights_to_update.values(),
         lr=config.lr,
         weight_decay=config.weight_decay,
     )
+    
+    # Freeze all parameters first
+    for p in model.parameters():
+        p.requires_grad = False
+    
+    # Unfreeze selected parameters
+    for p in weights_to_update.values():
+        p.requires_grad = True
 
     # 3. Training Loop
     loss_meter = AverageMeter()
-
-    if detdebug: config.num_steps=1
+    
     for it in range(config.num_steps):
         print(f"=== Epoch: {it} ===")
         loss_meter.reset()
@@ -120,7 +132,6 @@ def execute_ft(
             
             # Tokenize Full Sequence (Prompt + Target)
             inputs_targets = [t + tg for t, tg in zip(txt_batch, tgt_batch)]
-            # print("debug",inputs_targets)
             full_inputs = tok(inputs_targets, return_tensors="pt", padding=True).to(device)
             
             # Calculate Masking
@@ -221,49 +232,15 @@ if __name__ == "__main__":
     # 3. Load Model & Tokenizer
     print("Loading model and tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(config.model_name_or_path)
-    
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16
-    )
-
-    model = AutoModelForCausalLM.from_pretrained(
-        config.model_name_or_path,
-        quantization_config=bnb_config,
-        device_map='auto',
-        torch_dtype=torch.bfloat16,
-    )
+    model = AutoModelForCausalLM.from_pretrained(config.model_name_or_path)
     
     # Pad Token Setup
     tokenizer.add_special_tokens({'pad_token': '[PAD]'})
     model.resize_token_embeddings(len(tokenizer))
     model.config.pad_token_id = tokenizer.pad_token_id
-
-    # Prepare model for kbit training
-    model = prepare_model_for_kbit_training(model)
-    # Infer from rewrite_module (e.g., "model.layers.{}.mlp.down_proj.weight" -> "down_proj")
-    module_path = config.rewrite_module.replace(".weight", "")
-    target_modules = [module_path.split('.')[-1]]
-    print(f"Inferred LoRA target modules: {target_modules} from {config.rewrite_module}")
-    config.lora_r = 16
-    config.lora_alpha = 16
-    config.lora_dropout = 0
-
-    peft_config = LoraConfig(
-        r=config.lora_r,
-        lora_alpha=config.lora_alpha,
-        target_modules=target_modules,
-        layers_to_transform=[config.layer],
-        lora_dropout=config.lora_dropout,
-        bias="none",
-        task_type=TaskType.CAUSAL_LM
-    )
     
-    model = get_peft_model(model, peft_config)
-    model.print_trainable_parameters()
- 
+    model.to(torch.device(f'cuda:{config.device}'))
+
     # 4. Execute Fine-Tuning
     print_time("Begin FT Time")
     edited_model = execute_ft(model, tokenizer, requests, config)
@@ -272,26 +249,7 @@ if __name__ == "__main__":
     # 5. Save
     save_path = config.save_model_dir
     print(f"Saving model to {save_path}")
-    # edited_model.save_pretrained(save_path)
-    # tokenizer.save_pretrained(save_path)
-
-    # Save LoRA adapter first
-    lora_path = save_path + "_lora"
-    edited_model.save_pretrained(lora_path, save_embedding_layers=False)
-    tokenizer.save_pretrained(lora_path)
-
-    base_model = AutoModelForCausalLM.from_pretrained(
-        config.model_name_or_path,
-        torch_dtype=torch.float16,
-        device_map="cpu"
-    )
-    base_model.resize_token_embeddings(len(tokenizer))
-    base_model.config.pad_token_id = tokenizer.pad_token_id
-    model_with_lora = PeftModel.from_pretrained(base_model, lora_path)
-    merged_model = model_with_lora.merge_and_unload()
-
-    # Save final model
-    merged_model.save_pretrained(save_path)
+    edited_model.save_pretrained(save_path)
     tokenizer.save_pretrained(save_path)
 
     print("Finish Editing Process!!!!!!")
