@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Evaluate a model (full LLM or LoRA adapter) on a test set.
-The model is always loaded in 4-bit quantization.
+The model is always loaded in 4-bit quantization using bitsandbytes.
 Usage: python evaluatemem.py <model_path> <test_file>
 """
 
@@ -12,8 +12,7 @@ import random
 import argparse
 import torch
 from pathlib import Path
-from unsloth import FastModel
-from unsloth.chat_templates import get_chat_template
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from peft import PeftModel
 
 random.seed(42)
@@ -40,12 +39,18 @@ def is_lora_adapter(path):
 
 def load_model_4bit(model_path):
     """Load the model in 4-bit, automatically handling base models and LoRA adapters."""
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_use_double_quant=True
+    )
+    
     lora = is_lora_adapter(model_path)
     
     print(f"{'Detecting model type...' if not lora else 'Loading Base Model (for LoRA)'}...")
     
     if lora:
-        # Read base model name from LoRA config
         with open(os.path.join(model_path, "adapter_config.json"), "r") as f:
             adapter_cfg = json.load(f)
         base_model_name = adapter_cfg.get("base_model_name_or_path")
@@ -54,30 +59,30 @@ def load_model_4bit(model_path):
                              "Is this a valid LoRA save directory?")
         print(f"Detected LoRA adapter. Loading base model: {base_model_name}")
         
-        full_model, tokenizer = FastModel.from_pretrained(
+        tokenizer = AutoTokenizer.from_pretrained(base_model_name)
+        model = AutoModelForCausalLM.from_pretrained(
             base_model_name,
-            max_seq_length=2048,
-            load_in_4bit=True,
+            quantization_config=bnb_config,
+            device_map="auto",
         )
-        full_model = get_chat_template(tokenizer, chat_template="qwen3")
         
         print("Applying LoRA adapter in 4-bit...")
-        full_model = PeftModel.from_pretrained(full_model, model_path, adapter_name="default")
-        full_model.eval()
+        model = PeftModel.from_pretrained(model, model_path, adapter_name="default")
+        model.eval()
         
         print("LoRA model loaded successfully.")
     else:
-        full_model, tokenizer = FastModel.from_pretrained(
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
+        model = AutoModelForCausalLM.from_pretrained(
             model_path,
-            max_seq_length=2048,
-            load_in_4bit=True,
+            quantization_config=bnb_config,
+            device_map="auto",
         )
-        full_model = get_chat_template(tokenizer, chat_template="qwen3")
-        full_model.eval()
+        model.eval()
         
         print("Full model loaded successfully.")
 
-    return full_model, tokenizer
+    return model, tokenizer
 
 
 def extract_direction(text):
@@ -126,12 +131,14 @@ def evaluate_model(model, tokenizer, qa_samples, max_new_tokens=128):
     correct = 0
     results = []
     
+    device = next(model.parameters()).device
+    
     for i, (question, gt_answer, gt_dir) in enumerate(qa_samples):
         print(f"\n--- Sample {i+1}/{len(qa_samples)} ---")
         print("Q:", question, gt_answer)
         
         prompt = build_prompt(tokenizer, question)
-        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        inputs = tokenizer(prompt, return_tensors="pt").to(device)
 
         with torch.no_grad():
             outputs = model.generate(
