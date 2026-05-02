@@ -16,6 +16,7 @@ from lighteval.pipeline import ParallelismManager, Pipeline, PipelineParameters
 # =========================================================================
 # Path to the directory where fine-tune.py saved the model (config.save_model_dir)
 TRAINED_MODEL_DIR = "qwen2.5-7b_zsre_3k/"
+TRAINED_MODEL_DIR = "Qwen/Qwen2.5-7B-Instruct"
 MAX_SAMPLES = 100
 OUTPUT_DIR = "./results"
 STATUS_FILE = "IFEVAL.md"
@@ -150,12 +151,6 @@ def evaluate_edited_model(model_dir: str):
 
 
 def main():
-    # Check if the trained model directory exists
-    if not os.path.isdir(TRAINED_MODEL_DIR):
-        print(f"Trained model directory not found: {TRAINED_MODEL_DIR}")
-        print("Please ensure fine-tune.py has run and saved the model to this path.")
-        return
-
     # Parse existing status file
     evaluated_checkpoints = parse_status_file(STATUS_FILE)
     model_basename = os.path.basename(TRAINED_MODEL_DIR)
