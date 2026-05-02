@@ -1,0 +1,6 @@
+- sft.py train en fullFT, seulement MLP couche 6, sur Jean Zay avec les Nancy data
+- les modeles entraines sont sur /lustre/fsn1/projects/rech/knb/uyr14tk/results/.ep0
+- ces modeles sont trop gros pour etre testes sur ADA, il faut les tester en 4 bits
+- pour evaluer la memorisation, il faut utiliser evaluatemem.py avec les data nancy_mem.txt
+- idem pour la generalisation avec les data testset.txt
+- pour evaluer le forgetting, il faut utiliser ifeval2.txt
