@@ -1,7 +1,10 @@
+import argparse
+import json
 import glob
 import os
 import re
 
+from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 from lighteval.logging.evaluation_tracker import EvaluationTracker
@@ -14,22 +17,68 @@ from lighteval.pipeline import ParallelismManager, Pipeline, PipelineParameters
 # =========================================================================
 # CONFIGURATION
 # =========================================================================
-# Path to the directory where fine-tune.py saved the model (config.save_model_dir)
-TRAINED_MODEL_DIR = "qwen2.5-7b_zsre_3k/"
-TRAINED_MODEL_DIR = "Qwen/Qwen2.5-7B-Instruct"
+# Default base model path if no argument is provided
+DEFAULT_MODEL_PATH = "Qwen/Qwen2.5-7B-Instruct"
 MAX_SAMPLES = 100
-OUTPUT_DIR = "./results"
+OUTPUT_DIR = "./ifevalres"
 STATUS_FILE = "IFEVAL.md"
 
 
-def load_edited_model(model_dir: str):
-    """Load the fully fine-tuned model directly from the saved directory."""
-    print(f"Loading fine-tuned model from: {model_dir}")
-    quantization_config = BitsAndBytesConfig(load_in_4bit=True)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_dir, device_map="auto", torch_dtype="auto", quantization_config=quantization_config
+def is_lora_adapter(model_path: str) -> bool:
+    """Check if the given path contains a LoRA adapter."""
+    return os.path.isfile(os.path.join(model_path, "adapter_config.json"))
+
+
+def load_model_and_tokenizer(model_path: str) -> tuple:
+    """Load model and tokenizer from path in 4-bit quantization.
+    
+    Detects whether model_path contains:
+    - A LoRA adapter: loads base model + LoRA adapter
+    - A full model: loads model directly
+    """
+    print(f"Analyzing model path: {model_path}")
+    
+    if is_lora_adapter(model_path):
+        print("Detected LoRA adapter. Loading base model + adapter...")
+        # Determine base model from adapter config
+        with open(os.path.join(model_path, "adapter_config.json"), "r") as f:
+            adapter_config = json.load(f)
+        base_model_name = adapter_config.get("base_model_name_or_path", "Qwen/Qwen2.5-7B-Instruct")
+        print(f"Base model: {base_model_name}")
+    else:
+        print("Detected full model (no adapter_config.json found). Loading directly...")
+        base_model_name = model_path
+    
+    # Load with 4-bit quantization
+    print(f"Loading model in 4-bit quantization...")
+    quantization_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype="auto",
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_use_double_quant=True,
     )
-    tokenizer = AutoTokenizer.from_pretrained(model_dir)
+    
+    # Load base model
+    model = AutoModelForCausalLM.from_pretrained(
+        base_model_name,
+        device_map="auto",
+        torch_dtype="auto",
+        quantization_config=quantization_config,
+        trust_remote_code=True,
+    )
+    
+    # If LoRA adapter, merge adapters
+    if is_lora_adapter(model_path):
+        print("Loading LoRA adapter...")
+        model = PeftModel.from_pretrained(model, model_path)
+        model = model.merge_and_unload()
+    
+    # Load tokenizer
+    print("Loading tokenizer...")
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_path if not is_lora_adapter(model_path) else base_model_name,
+        trust_remote_code=True,
+    )
     
     # Ensure consistent padding behavior for evaluation
     if tokenizer.pad_token is None:
@@ -65,7 +114,7 @@ def parse_status_file(status_file: str) -> dict:
     return results
 
 
-def write_status_file(status_file: str, results: dict):
+def write_status_file(status_file: str, results: dict, model_path: str = ""):
     """Write/update IFEVAL.md with evaluation results."""
     header = "| Checkpoint | Overall | Follow Inst. | Status |\n|---|---|---|---|\n"
 
@@ -87,18 +136,18 @@ def write_status_file(status_file: str, results: dict):
 
     with open(status_file, "w") as f:
         f.write("# IFEVAL Evaluation Results\n\n")
-        f.write(f"Trained Model Path: {TRAINED_MODEL_DIR}\n\n")
+        f.write(f"Model Path: {model_path}\n\n")
         f.write(header)
         f.write(rows)
 
 
-def evaluate_edited_model(model_dir: str):
-    """Evaluate the fine-tuned model on ifeval and return metrics."""
+def evaluate_model(model_path: str):
+    """Evaluate the model on ifeval and return metrics."""
     print(f"\n{'='*60}")
-    print(f"Evaluating: {model_dir}")
+    print(f"Evaluating: {model_path}")
     print(f"{'='*60}")
 
-    model, tokenizer = load_edited_model(model_dir)
+    model, tokenizer = load_model_and_tokenizer(model_path)
 
     evaluation_tracker = EvaluationTracker(output_dir=OUTPUT_DIR)
     pipeline_params = PipelineParameters(
@@ -106,7 +155,7 @@ def evaluate_edited_model(model_dir: str):
         max_samples=MAX_SAMPLES,
     )
 
-    config = TransformersModelConfig(model_name=model_dir, batch_size=1)
+    config = TransformersModelConfig(model_name=model_path, batch_size=1)
     model = TransformersModel.from_model(model, config)
 
     pipeline = Pipeline(
@@ -151,28 +200,50 @@ def evaluate_edited_model(model_dir: str):
 
 
 def main():
+    # Parse arguments
+    parser = argparse.ArgumentParser(description="Evaluate a model on IFEVAL benchmark")
+    parser.add_argument(
+        "model_path",
+        type=str,
+        default=None,
+        help="Path to the model directory (LoRA adapter or full model). "
+             "If not provided, uses the default model.",
+    )
+    args = parser.parse_args()
+    
+    # Determine which model to evaluate
+    model_path = args.model_path if args.model_path else DEFAULT_MODEL_PATH
+    
+    # Verify path exists
+    if not os.path.exists(model_path):
+        print(f"Error: Model path '{model_path}' does not exist.")
+        return
+    
+    print(f"\nModel path: {model_path}")
+    print(f"Is LoRA adapter: {is_lora_adapter(model_path)}")
+    
+    model_basename = os.path.basename(os.path.normpath(model_path))
+    
     # Parse existing status file
     evaluated_checkpoints = parse_status_file(STATUS_FILE)
-    model_basename = os.path.basename(TRAINED_MODEL_DIR)
 
-    if os.path.basename(TRAINED_MODEL_DIR) in evaluated_checkpoints:
+    if model_basename in evaluated_checkpoints:
         print(f"Model {model_basename} has already been evaluated on IFEVAL.")
         print(f"Results can be viewed in {STATUS_FILE}")
         return
 
-    print(f"Found trained model at: {TRAINED_MODEL_DIR}")
     print(f"Evaluating on IFEVAL benchmark...\n")
 
-    # Evaluate the trained model
+    # Evaluate the model
     existing_results = {}
     if os.path.exists(STATUS_FILE):
         existing_results = parse_status_file(STATUS_FILE)
 
-    metrics = evaluate_edited_model(TRAINED_MODEL_DIR)
+    metrics = evaluate_model(model_path)
     existing_results[model_basename] = metrics
 
-    # Update status file
-    write_status_file(STATUS_FILE, existing_results)
+    # Write status file with updated path info
+    write_status_file(STATUS_FILE, existing_results, model_path=model_path)
     print(f"\nUpdated {STATUS_FILE} with results for {model_basename}")
 
     print(f"\n{'='*60}")
