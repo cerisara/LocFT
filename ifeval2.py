@@ -6,6 +6,7 @@ import re
 
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+import torch
 
 from lighteval.logging.evaluation_tracker import EvaluationTracker
 from lighteval.models.transformers.transformers_model import (
@@ -53,8 +54,8 @@ def load_model_and_tokenizer(model_path: str) -> tuple:
     print(f"Loading model in 4-bit quantization...")
     quantization_config = BitsAndBytesConfig(
         load_in_4bit=True,
-        bnb_4bit_compute_dtype="auto",
         bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
         bnb_4bit_use_double_quant=True,
     )
     

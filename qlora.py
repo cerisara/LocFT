@@ -114,15 +114,12 @@ def execute_ft(
     
     # Freeze quantized base model weights explicitly
     for name, p in model.named_parameters():
-        if "lora" not in name.lower() and "embed" not in name.lower():
+        # if "lora" not in name.lower() and "embed" not in name.lower():
+        if "lora" not in name.lower():
             p.requires_grad = False
         else:
             p.requires_grad = True
-            if p.dim() > 1:
-                torch.nn.init.kaiming_uniform_(p, a=torch.sqrt(torch.tensor(5.0)))
-            elif p.dim() == 1:
-                torch.nn.init.constant_(p, 0)
-
+            if p.dim() == 1: torch.nn.init.constant_(p, 0)
     print(f"Trainable QLoRA parameters are active.")
     
     # 3. Training Loop
