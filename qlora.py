@@ -186,11 +186,6 @@ def execute_ft(
 
         print(f"Total Average Loss: {loss_meter.avg:.4f}")
 
-        # Early stopping condition
-        if loss_meter.avg < 1e-2:
-            print("Loss threshold reached. Stopping early.")
-            break
-    
     return model
 
 # -----------------------------------------------------------------------------

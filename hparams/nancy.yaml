@@ -5,7 +5,7 @@ save_model_dir: "./saves/lora_nancy"
 layer: 6
 rewrite_module: "model.layers.{}.mlp.down_proj.weight"
 
-lr: 5.0e-4
+lr: 1.0e-4
 batch_size: 1
 num_steps: 25
 device: 0
