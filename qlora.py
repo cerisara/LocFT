@@ -127,6 +127,14 @@ def execute_ft(
     
     for it in range(config.num_steps):
         print(f"=== Epoch: {it} ===")
+
+        # Save LoRA adapter checkpoint before each epoch
+        epoch_save_path = os.path.join(config.save_model_dir, f"checkpoint_epoch_{it}")
+        os.makedirs(epoch_save_path, exist_ok=True)
+        model.save_pretrained(epoch_save_path)
+        tok.save_pretrained(epoch_save_path)
+        print(f"Saved LoRA checkpoint to {epoch_save_path}")
+
         loss_meter.reset()
         random.shuffle(requests)
 
