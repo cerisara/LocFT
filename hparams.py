@@ -15,6 +15,7 @@ class FTHyperParams:
     lr: float = 5e-5
     weight_decay: float = 0
     num_steps: int = 20
+    gradient_accumulation_steps: int = 2
     
     device: int = 0
     

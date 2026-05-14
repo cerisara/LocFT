@@ -141,6 +141,9 @@ def execute_ft(
         texts = [r["prompt"] for r in requests]
         targets = [r["target_new"] for r in requests]
 
+        total_batches = sum(1 for _ in chunks(texts, config.batch_size))
+        batch_idx = 0
+
         for txt_batch, tgt_batch in zip(
             chunks(texts, config.batch_size), chunks(targets, config.batch_size)
         ):
@@ -166,31 +169,40 @@ def execute_ft(
                 for length in prompt_len
             ]).to(device)
             
-            opt.zero_grad()
             bs = full_inputs["input_ids"].shape[0]
-            
+
             # Forward pass
             logits = model(**full_inputs).logits
-            
+
             # Shift for autoregressive loss (pred next token)
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = full_inputs['input_ids'][..., 1:].contiguous()
-            
+
             loss_fct = CrossEntropyLoss(reduction='none')
             loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
             loss = loss.view(bs, -1)
-            
+
             # Apply mask (ignore prompt tokens in loss)
             # label_mask is sliced [:, 1:] because of the shift
             masked_loss = (loss * label_mask[:, 1:]).sum(1) / label_mask[:, 1:].sum(1)
             final_loss = masked_loss.mean()
-                
+
             print(f"Batch loss: {final_loss.item():.4f}")
             loss_meter.update(final_loss.item(), n=bs)
 
+            # Normalize loss for gradient accumulation
+            accumulated_loss = final_loss / config.gradient_accumulation_steps
+
             if final_loss.item() >= 1e-2:
-                final_loss.backward()
-                opt.step()
+                accumulated_loss.backward()
+
+            # Step optimizer every `gradient_accumulation_steps` batches
+            if (it * total_batches + batch_idx) % config.gradient_accumulation_steps == 0 or (it == config.num_steps - 1 and batch_idx == total_batches - 1):
+                if final_loss.item() >= 1e-2:
+                    opt.step()
+                    opt.zero_grad()
+
+            batch_idx += 1
 
         print(f"Total Average Loss: {loss_meter.avg:.4f}")
 
