@@ -3,9 +3,13 @@
 Compute the magnitude of LoRA weight differences between each epoch
 and the initial epoch (0).
 
-Magnitude = sqrt(sum(diff^2)) / num_elements
-          = Frobenius_norm(diff) / num_elements
-          = per-element RMS of the difference
+Uses per-matrix RMS averaged across all LoRA matrices.
+This is comparable across models with different hidden sizes,
+because each matrix's RMS is normalized by its own size,
+and we average over the number of matrices (not total elements).
+
+Magnitude = mean_j( sqrt(mean_k(diff_jk^2)) )
+          = average of per-matrix RMS values
 """
 
 import os
@@ -54,19 +58,21 @@ def main(checkpoint_dir):
         ckpt_path = os.path.join(ep_dir, "adapter_model.safetensors")
         state = load_file(ckpt_path)
 
-        total_frobenius_sq = 0.0
+        per_matrix_rms = []
+        frobenius_sq_sum = 0.0
         total_elements = 0
 
         for key in state:
             diff = state[key] - base_state[key]
-            # Frobenius norm squared (sum of squared diffs)
-            total_frobenius_sq += diff.pow(2).sum().item()
+            matrix_rms = diff.pow(2).mean().sqrt().item()  # RMS for THIS matrix
+            per_matrix_rms.append(matrix_rms)
+            frobenius_sq_sum += diff.pow(2).sum().item()
             total_elements += diff.numel()
 
-        frobenius_norm = total_frobenius_sq ** 0.5
-        magnitude_per_dim = frobenius_norm / total_elements
+        frobenius_norm = frobenius_sq_sum ** 0.5
+        magnitude_per_matrix = sum(per_matrix_rms) / len(per_matrix_rms)  # avg per-matrix RMS
 
-        print(f"{epoch_num:>6} | {magnitude_per_dim:>22.8f} | {frobenius_norm:>18.4f} | {total_elements:>12}")
+        print(f"{epoch_num:>6} | {magnitude_per_matrix:>22.8f} | {frobenius_norm:>18.4f} | {total_elements:>12}")
 
 if __name__ == "__main__":
     main(DIR)
