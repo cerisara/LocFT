@@ -58,6 +58,7 @@ def execute_ft(
     tok: AutoTokenizer,
     requests: List[Dict],
     config: FTHyperParams,
+    save_dir: str = None,
 ) -> AutoModelForCausalLM:
     """
     Executes the FT update algorithm (Pure PyTorch/Transformers implementation)
@@ -173,6 +174,13 @@ def execute_ft(
 
         print(f"Total Average Loss: {loss_meter.avg:.4f}")
 
+        # Save model checkpoint after each epoch
+        if save_dir is not None:
+            epoch_save_path = os.path.join(save_dir, f"checkpoint.epoch.{it}")
+            print(f"Saving checkpoint to {epoch_save_path}")
+            model.save_pretrained(epoch_save_path)
+            tok.save_pretrained(epoch_save_path)
+
         # Early stopping condition
         if loss_meter.avg < 1e-2:
             print("Loss threshold reached. Stopping early.")
@@ -241,13 +249,7 @@ if __name__ == "__main__":
 
     # 4. Execute Fine-Tuning
     print_time("Begin FT Time")
-    edited_model = execute_ft(model, tokenizer, requests, config)
+    edited_model = execute_ft(model, tokenizer, requests, config, config.save_model_dir)
     print_time("End FT Time")
-
-    # 5. Save
-    save_path = config.save_model_dir
-    print(f"Saving model to {save_path}")
-    edited_model.save_pretrained(save_path)
-    tokenizer.save_pretrained(save_path)
 
     print("Finish Editing Process!!!!!!")
