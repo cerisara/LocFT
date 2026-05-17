@@ -1,4 +1,4 @@
-model_name_or_path: "Qwen/Qwen2.5-7B-Instruct"
+model_name_or_path: "Qwen/Qwen3.5-2B-Instruct"
 data_path: "./nancy_18.txt"
 save_model_dir: "./saves/lora_nancy"
 
@@ -7,7 +7,6 @@ rewrite_module: "model.layers.{}.mlp.down_proj.weight"
 
 lr: 1.0e-4
 batch_size: 4
-num_steps: 25
-lora_r: 32
-gradient_accumulation_steps: 16
+num_steps: 10
+gradient_accumulation_steps: 1
 device: 0

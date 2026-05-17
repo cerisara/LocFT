@@ -81,19 +81,16 @@ def execute_ft(
         print(f"Refining request: [{request['prompt']}] -> [{request['target_new']}]")
     
     # 1. Select Weights to Update
-    # logic: search parameter names that match the rewrite_module pattern for specific layers
-    layers_to_edit = [config.layer] # You can extend this to a list if needed
+    # By default, select all MLP weights across all layers
+    mlp_pattern = "mlp"  # matches 'mlp', 'gate_proj', 'up_proj', 'down_proj', etc.
     weights_to_update = {}
     
     for n, p in model.named_parameters():
-        for layer in layers_to_edit:
-            # Assumes config.rewrite_module is a format string like 'layers.{}.mlp'
-            # or a specific substring unique to that layer's module
-            if config.rewrite_module.format(layer) in n:
-                weights_to_update[n] = p
-                
+        if mlp_pattern in n:
+            weights_to_update[n] = p
+    
     if not weights_to_update:
-        raise ValueError(f"No weights found matching module {config.rewrite_module} at layer {config.layer}")
+        raise ValueError("No MLP weights found in the model")
 
     print(f"Weights to be updated ({len(weights_to_update)} params): {list(weights_to_update.keys())}")
     
